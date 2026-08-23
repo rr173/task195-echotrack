@@ -33,13 +33,28 @@ func (s *Store) UpsertWindow(ctx context.Context, w *model.Window) (ingest.Inges
 	if err != nil {
 		return ingest.IngestReceipt{}, false, fmt.Errorf("marshal q: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(ctx,
 		`INSERT INTO windows (id, batch_id, element_no, seq_no, i_json, q_json, sample_rate, status, checksum, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(batch_id, element_no, seq_no) DO NOTHING`,
 		w.ID, w.BatchID, w.ElementNo, w.SeqNo, iJSON, qJSON, w.SampleRate, w.Status, w.Checksum,
 		w.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return ingest.IngestReceipt{}, false, fmt.Errorf("insert window: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return ingest.IngestReceipt{}, false, fmt.Errorf("inspect window insert: %w", err)
+	}
+	if rows == 0 {
+		existing, err := s.getWindowByKey(ctx, w.BatchID, w.ElementNo, w.SeqNo)
+		if err != nil {
+			return ingest.IngestReceipt{}, false, err
+		}
+		if existing.Checksum != w.Checksum {
+			return ingest.IngestReceipt{}, false, model.ErrDuplicateWindow
+		}
+		return ingest.IngestReceipt{WindowID: existing.ID, Inserted: false, Duplicated: true, Checksum: existing.Checksum}, false, nil
 	}
 	return ingest.IngestReceipt{WindowID: w.ID, Inserted: true, Duplicated: false, Checksum: w.Checksum}, true, nil
 }
