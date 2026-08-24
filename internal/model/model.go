@@ -284,7 +284,13 @@ func ValidateInterpretationTransition(from, to string) error {
 	return fmt.Errorf("%w: %s -> %s", ErrInvalidState, from, to)
 }
 
-// PreserveWindowCursor keeps the cursor while a state transition is persisted.
+// PreserveWindowCursor keeps the upload-phase cursor across a state
+// transition instead of letting the caller reset it. The requested value is
+// intentionally ignored: the cursor persisted during uploading must survive
+// into processing/reviewing so that recovery and resumption can continue from
+// the last acknowledged window. Resetting it here would break 续传 after a
+// restart.
 func PreserveWindowCursor(current, requested int64) int64 {
-	return requested
+	_ = requested
+	return current
 }

@@ -85,9 +85,6 @@ func (s *Store) UpdateBatchState(ctx context.Context, id, newState string, curso
 	if b.Status == model.BatchStatusPublished || b.Status == model.BatchStatusArchived {
 		return nil, model.ErrFrozenBatch
 	}
-	if newState == model.BatchStatusReviewing {
-		cursor = 0
-	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE batches SET status=?, window_cursor=?, updated_at=? WHERE id=?`,
