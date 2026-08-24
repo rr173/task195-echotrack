@@ -64,6 +64,24 @@ func TestBatchStateTransitions(t *testing.T) {
 	}
 }
 
+func TestCanReceive(t *testing.T) {
+	// 解释包发布后批次冻结：published/archived 不得再接收窗口。
+	receivable := []string{BatchStatusUploading, BatchStatusProcessing}
+	frozen := []string{BatchStatusReviewing, BatchStatusPublished, BatchStatusArchived}
+	for _, st := range receivable {
+		b := &Batch{Status: st}
+		if !b.CanReceive() {
+			t.Errorf("state %s should be receivable", st)
+		}
+	}
+	for _, st := range frozen {
+		b := &Batch{Status: st}
+		if b.CanReceive() {
+			t.Errorf("state %s should be frozen (not receivable)", st)
+		}
+	}
+}
+
 func TestWindowStateTransitions(t *testing.T) {
 	if err := ValidateWindowTransition(WindowStatusNew, WindowStatusCorrected); err != nil {
 		t.Errorf("new->corrected: %v", err)

@@ -123,12 +123,13 @@ func (b *BatchService) GetWindow(ctx context.Context, windowID string) (*model.W
 }
 
 // IgnoreWindow 忽略某阵元窗口。
+// published/archived 批次输入已冻结，禁止改动快照内窗口状态。
 func (b *BatchService) IgnoreWindow(ctx context.Context, batchID string, elementNo int, seqNo int64) error {
 	batch, err := b.store.GetBatch(ctx, batchID)
 	if err != nil {
 		return err
 	}
-	if batch.Status == model.BatchStatusArchived {
+	if batch.Status == model.BatchStatusPublished || batch.Status == model.BatchStatusArchived {
 		return model.ErrFrozenBatch
 	}
 	return b.store.IgnoreWindow(ctx, batchID, elementNo, seqNo)

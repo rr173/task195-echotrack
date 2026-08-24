@@ -200,8 +200,10 @@ func (a *Array) ElementByNo(no int) (Element, error) {
 func (b *Batch) BatchState() string { return b.Status }
 
 // CanReceive 判断批次是否仍可接收窗口。
+// 仅 uploading/processing 可接收；reviewing/published/archived 后输入冻结，
+// 迟到窗口只能进入新复核版本（supersede），旧包不变。
 func (b *Batch) CanReceive() bool {
-	return b.Status == BatchStatusUploading || b.Status == BatchStatusProcessing || b.Status == BatchStatusPublished
+	return b.Status == BatchStatusUploading || b.Status == BatchStatusProcessing
 }
 
 // ValidateTransition 校验批次状态流转合法性。
