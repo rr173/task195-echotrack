@@ -18,7 +18,9 @@ func (s *Store) UpsertWindow(ctx context.Context, w *model.Window) (ingest.Inges
 	existing, err := s.getWindowByKey(ctx, w.BatchID, w.ElementNo, w.SeqNo)
 	if err == nil {
 		if existing.Checksum != w.Checksum {
-			return ingest.IngestReceipt{}, false, fmt.Errorf("duplicate window: %v", model.ErrDuplicateWindow)
+			// 内容不一致：以 %w 包装 ErrDuplicateWindow，便于上层用 errors.Is 识别为冲突。
+			return ingest.IngestReceipt{}, false, fmt.Errorf("%w: batch %s element %d seq %d",
+				model.ErrDuplicateWindow, w.BatchID, w.ElementNo, w.SeqNo)
 		}
 		return ingest.IngestReceipt{WindowID: existing.ID, Inserted: false, Duplicated: true, Checksum: existing.Checksum}, false, nil
 	}

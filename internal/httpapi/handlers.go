@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -30,17 +31,19 @@ func NewHandler(arr *service.ArrayService, batch *service.BatchService,
 func ctx(r *http.Request) context.Context { return r.Context() }
 
 // httpStatus 错误到 HTTP 状态映射。
+// 使用 errors.Is 识别被服务层/store 层 %w 包装的哨兵错误，避免包装后的
+// 冲突错误（如 ErrDuplicateWindow、ErrFrozenBatch）被降级为 500。
 func httpStatus(err error) int {
-	switch err {
-	case model.ErrNotFound:
+	switch {
+	case errors.Is(err, model.ErrNotFound):
 		return http.StatusNotFound
-	case model.ErrConflict, model.ErrImmutableSnapshot:
+	case errors.Is(err, model.ErrConflict), errors.Is(err, model.ErrImmutableSnapshot), errors.Is(err, model.ErrDuplicateWindow):
 		return http.StatusConflict
-	case model.ErrInvalidState:
+	case errors.Is(err, model.ErrInvalidState):
 		return http.StatusUnprocessableEntity
-	case model.ErrFrozenBatch, model.ErrSeqRegression:
+	case errors.Is(err, model.ErrFrozenBatch), errors.Is(err, model.ErrSeqRegression):
 		return http.StatusLocked
-	case model.ErrBadSampling, model.ErrUnknownElement, model.ErrBrokenPhase:
+	case errors.Is(err, model.ErrBadSampling), errors.Is(err, model.ErrUnknownElement), errors.Is(err, model.ErrBrokenPhase):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
