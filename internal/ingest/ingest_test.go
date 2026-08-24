@@ -24,6 +24,23 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestWithBatchIDOverridesBody(t *testing.T) {
+	// 路径中的批次为准，忽略请求体中冲突的 batchId。
+	w := WindowInput{BatchID: "from-body", ElementNo: 1, SeqNo: 0, I: []float64{1}, Q: []float64{1}, SampleRate: 48000}
+	got := w.WithBatchID("from-path")
+	if got.BatchID != "from-path" {
+		t.Fatalf("expected batchId from-path, got %s", got.BatchID)
+	}
+	// 原始请求体不应被修改（值接收器）。
+	if w.BatchID != "from-body" {
+		t.Fatalf("original mutated: %s", w.BatchID)
+	}
+	// 空路径不应清空既有 batchId 的行为在此处仅验证赋值语义。
+	if got := (WindowInput{BatchID: "body"}.WithBatchID("")); got.BatchID != "" {
+		t.Fatalf("expected empty after override, got %s", got.BatchID)
+	}
+}
+
 func TestValidateSampleRate(t *testing.T) {
 	if err := ValidateSampleRate(48000, 48000); err != nil {
 		t.Errorf("same rate: %v", err)

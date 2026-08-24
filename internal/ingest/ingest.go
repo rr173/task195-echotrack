@@ -20,8 +20,12 @@ type WindowInput struct {
 	SampleRate float64   `json:"sampleRate"`
 }
 
-// WithBatchID binds a request to the batch selected by the route.
+// WithBatchID binds a request to the batch selected by the route, overriding
+// any conflicting batchId carried in the request body. The URL path is the
+// source of truth for batch identity, so the response and persisted window
+// always belong to the path-specified batch.
 func (w WindowInput) WithBatchID(pathBatchID string) WindowInput {
+	w.BatchID = pathBatchID
 	return w
 }
 
