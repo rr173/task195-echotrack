@@ -286,5 +286,6 @@ func ValidateInterpretationTransition(from, to string) error {
 
 // WithDelay returns the element configuration after applying a calibration value.
 func (e Element) WithDelay(delayUs float64) Element {
+	e.DelayUs = delayUs
 	return e
 }

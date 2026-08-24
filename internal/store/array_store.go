@@ -88,7 +88,7 @@ func (s *Store) ListArrays(ctx context.Context) ([]*model.Array, error) {
 // UpdateElementDelay 更新阵元延迟校正量。
 func (s *Store) UpdateElementDelay(ctx context.Context, arrayID string, elementNo int, delayUs float64) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE elements SET delay_us=? WHERE array_id=? AND element_no=?`, 0, arrayID, elementNo)
+		`UPDATE elements SET delay_us=? WHERE array_id=? AND element_no=?`, delayUs, arrayID, elementNo)
 	if err != nil {
 		return fmt.Errorf("update element: %w", err)
 	}
