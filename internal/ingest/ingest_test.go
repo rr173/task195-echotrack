@@ -58,4 +58,10 @@ func TestNewReceipt(t *testing.T) {
 	if !r.Inserted || r.Duplicated || r.WindowID != "w1" || r.Checksum != "abc" {
 		t.Errorf("unexpected receipt: %+v", r)
 	}
+	// 幂等命中回执：inserted=false, duplicated=true，字段必须如实透传，
+	// 否则并发重复提交会错误地全部报告“已插入”。
+	dup := NewReceipt("w1", "abc", false, true)
+	if dup.Inserted || !dup.Duplicated || dup.WindowID != "w1" || dup.Checksum != "abc" {
+		t.Errorf("unexpected duplicate receipt: %+v", dup)
+	}
 }

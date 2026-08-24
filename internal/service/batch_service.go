@@ -100,7 +100,10 @@ func (b *BatchService) IngestWindow(ctx context.Context, w ingest.WindowInput) (
 	if err != nil {
 		return nil, nil, err
 	}
-	receipt = ingest.NewReceipt(receipt.WindowID, receipt.Checksum, inserted, !inserted)
+	// store.UpsertWindow 已按 (batchId, elementNo, seqNo) 唯一键与 checksum 构造好幂等回执：
+	// inserted=true 表示本次写入新窗口；inserted=false 表示命中既有记录（duplicated=true）。
+	// 并发提交同一窗口时，由 SQLite UNIQUE 约束 + INSERT OR IGNORE 串行化，
+	// 恰好一个写入者拿到 rowsAffected=1，其余拿到 0 后复检 checksum 命中幂等。
 	if inserted {
 		// 推进批次游标。
 		if w.SeqNo+1 > batch.WindowCursor {

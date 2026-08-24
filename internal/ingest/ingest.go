@@ -88,7 +88,8 @@ type IngestReceipt struct {
 	Checksum   string `json:"checksum"`
 }
 
-// NewReceipt 构造接收回执。
+// NewReceipt 构造接收回执：inserted 标记本次请求是否真正写入新窗口，
+// duplicated 标记是否命中既有幂等记录。两者互斥，由调用方依据写入结果传入。
 func NewReceipt(windowID, checksum string, inserted, duplicated bool) IngestReceipt {
-	return IngestReceipt{WindowID: windowID, Inserted: true, Duplicated: false, Checksum: checksum}
+	return IngestReceipt{WindowID: windowID, Inserted: inserted, Duplicated: duplicated, Checksum: checksum}
 }
