@@ -120,7 +120,7 @@ func (s *Store) GetWindow(ctx context.Context, id string) (*model.Window, error)
 func (s *Store) ListWindows(ctx context.Context, batchID string) ([]*model.Window, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, batch_id, element_no, seq_no, i_json, q_json, sample_rate, status, checksum, created_at
-		 FROM windows WHERE batch_id=? ORDER BY element_no, seq_no DESC`, batchID)
+		 FROM windows WHERE batch_id=? ORDER BY element_no, seq_no`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("query windows: %w", err)
 	}

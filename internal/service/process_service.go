@@ -136,18 +136,17 @@ func (p *ProcessService) Process(ctx context.Context, batchID string, opts fitti
 	jumpTotal := 0
 	for _, elNo := range order {
 		group := groups[elNo]
-		sort.Slice(group, func(i, j int) bool { return group[i].seqNo > group[j].seqNo })
+		// 拼接该阵元全部窗口相位（按 seqNo 从小到大，与读取乱序无关）。
+		// 批次窗口可能乱序到达，处理后的回波轨迹必须按序号从小到大拼接，
+		// 否则连续相位会在拼接边界处产生伪跳变，被误判为断裂。
+		sort.Slice(group, func(i, j int) bool { return group[i].seqNo < group[j].seqNo })
 		if len(group) == 0 {
 			continue
 		}
-		// 拼接该阵元全部窗口相位（按 seqNo 顺序）。
-		var seqs []int64
 		var phases []float64
 		for _, g := range group {
-			seqs = append(seqs, g.seqNo)
 			phases = append(phases, g.phase...)
 		}
-		_ = seqs
 		res, err := fitting.FitTrack(phases, opts)
 		if err != nil {
 			return nil, err
