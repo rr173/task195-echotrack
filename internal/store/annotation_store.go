@@ -160,12 +160,13 @@ func (s *Store) NextInterpretationVersion(ctx context.Context, batchID string) (
 	return n, nil
 }
 
-// FindInterpretationByVersion 全局按版本号查找解释包（跨批次，用于替代操作）。
+// FindInterpretationByVersion 在请求指定的批次内按版本号查找解释包。
+// 不同批次可能存在相同版本号，因此版本号查询必须限定在批次内，
+// 不得跨批次替代到另一个批次的解释包。
 func (s *Store) FindInterpretationByVersion(ctx context.Context, batchID string, version int) (*model.Interpretation, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, batch_id, version, status, title, snapshot_ref, track_count, created_at, published_at
-		 FROM interpretations WHERE version=? ORDER BY created_at DESC LIMIT 1`, version)
-	_ = batchID
+		 FROM interpretations WHERE batch_id=? AND version=? ORDER BY created_at DESC LIMIT 1`, batchID, version)
 	var in model.Interpretation
 	var created string
 	var publishedAt *string
