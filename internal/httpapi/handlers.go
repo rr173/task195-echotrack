@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -26,8 +27,10 @@ func NewHandler(arr *service.ArrayService, batch *service.BatchService,
 	return &Handler{arrays: arr, batches: batch, process: proc, review: rev}
 }
 
-// ctx 提取请求上下文。
-func ctx(r *http.Request) context.Context { return context.Background() }
+// ctx 提取请求上下文。透传 r.Context() 以传播客户端取消信号：
+// 客户端在上传期间断开连接时，ctx 被取消并一路传递到存储层，使正在进行的
+// 写入与游标推进随事务回滚——被取消的窗口不会落库、游标不前进、后续查询看不到它。
+func ctx(r *http.Request) context.Context { return r.Context() }
 
 // httpStatus 错误到 HTTP 状态映射。
 func httpStatus(err error) int {
@@ -42,6 +45,10 @@ func httpStatus(err error) int {
 		return http.StatusLocked
 	case model.ErrBadSampling, model.ErrUnknownElement, model.ErrBrokenPhase:
 		return http.StatusBadRequest
+	case model.ErrRequestCancelled:
+		// 客户端在上传完成前取消了请求：返回 499（可识别的取消结果），
+		// 响应体标注 cancelled=true，便于前端区分“取消”与真正的失败。
+		return 499
 	default:
 		return http.StatusInternalServerError
 	}
@@ -180,6 +187,10 @@ func (h *Handler) GetBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // UploadWindow POST /api/batches/{id}/windows
+//
+// 客户端取消语义：请求 ctx 透传到存储层，写入提交前取消则事务回滚
+// （窗口不入库、游标不前进），返回 499 + {cancelled:true} 的可识别取消结果；
+// 提交后取消则窗口已落库，返回 200 并在 receipt 中标注 cancelled=true。
 func (h *Handler) UploadWindow(w http.ResponseWriter, r *http.Request) {
 	var in ingest.WindowInput
 	if !parseBody(w, r, &in) {
@@ -189,6 +200,23 @@ func (h *Handler) UploadWindow(w http.ResponseWriter, r *http.Request) {
 	in.BatchID = batchID
 	batch, receipt, err := h.batches.IngestWindow(ctx(r), in)
 	if err != nil {
+		if errors.Is(err, model.ErrRequestCancelled) {
+			// 已取消：即使提交后带回了 batch/receipt，也统一以“取消”可识别结果返回。
+			if batch == nil || receipt == nil {
+				writeJSON(w, 499, map[string]any{
+					"error":     err.Error(),
+					"cancelled": true,
+				})
+				return
+			}
+			writeJSON(w, 499, map[string]any{
+				"batch":     batch,
+				"receipt":   receipt,
+				"cancelled": true,
+				"error":     err.Error(),
+			})
+			return
+		}
 		handleErr(w, err)
 		return
 	}

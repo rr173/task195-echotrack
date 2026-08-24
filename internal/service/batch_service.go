@@ -61,8 +61,15 @@ func (b *BatchService) List(ctx context.Context, arrayID string) ([]*model.Batch
 
 // IngestWindow 接收窗口（幂等）：
 //  1. 批次存在且可接收；2. 阵元合法；3. 采样率一致；4. 内容校验和去重。
+//
+// 取消语义：整个链路透传请求 ctx；客户端在写入提交前取消请求时，
+// store.UpsertWindowAndAdvanceCursor 的事务回滚——既不写窗口也不推进游标，
+// 本函数返回 model.ErrRequestCancelled，调用方据此返回可识别的取消结果，
+// 后续查询看不到该窗口。提交后取消（响应尚未写完）则按成功处理，不回退已提交数据。
 func (b *BatchService) IngestWindow(ctx context.Context, w ingest.WindowInput) (*model.Batch, *ingest.IngestReceipt, error) {
-	ctx = context.Background()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, model.ErrRequestCancelled
+	}
 	if err := w.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid window: %w", err)
 	}
@@ -97,17 +104,18 @@ func (b *BatchService) IngestWindow(ctx context.Context, w ingest.WindowInput) (
 		Checksum:   checksum,
 		CreatedAt:  Now(),
 	}
-	receipt, inserted, err := b.store.UpsertWindow(ctx, win)
+	// 原子地写入窗口并推进游标：提交前取消则事务回滚。
+	receipt, inserted, batchOut, err := b.store.UpsertWindowAndAdvanceCursor(ctx, win, batch.WindowCursor)
 	if err != nil {
 		return nil, nil, err
 	}
-	if inserted {
-		// 推进批次游标。
-		if w.SeqNo+1 > batch.WindowCursor {
-			_, _ = b.store.UpdateBatchState(ctx, batch.ID, batch.Status, w.SeqNo+1)
-		}
+	_ = inserted
+	if err := ctx.Err(); err != nil {
+		// 提交已完成但客户端在响应前取消：数据已落库且游标已推进，
+		// 无法回退；返回可识别的取消结果，让客户端感知并按需重试幂等上传。
+		return batchOut, &receipt, model.ErrRequestCancelled
 	}
-	return batch, &receipt, nil
+	return batchOut, &receipt, nil
 }
 
 // ListWindows 列出批次窗口。

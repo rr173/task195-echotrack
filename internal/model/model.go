@@ -52,6 +52,10 @@ var (
 	ErrFrozenBatch       = errors.New("batch is frozen")
 	ErrImmutableSnapshot = errors.New("interpretation snapshot is immutable")
 	ErrSeqRegression     = errors.New("sequence number regression")
+	// ErrRequestCancelled 客户端在上传完成前取消了请求。
+	// 收到该错误时调用方应返回可识别的取消结果，且不得有任何已提交写入
+	// 或推进过的游标对外可见——上游存储在事务提交前检测取消并回滚。
+	ErrRequestCancelled = errors.New("request cancelled")
 )
 
 // Element 阵元配置：编号、几何位置与硬件延迟校正量。

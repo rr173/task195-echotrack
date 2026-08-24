@@ -13,8 +13,14 @@ import (
 // UpsertWindow 幂等写入窗口：以 (batch_id, element_no, seq_no) 为唯一键。
 // 已存在时校验 checksum：内容一致返回既有记录（duplicated=true, inserted=false）；
 // 内容不一致返回 ErrDuplicateWindow。
+//
+// 本函数遵守传入的 ctx：若客户端在上传期间取消请求，正在进行的查询与写入会随
+// ctx 一同中断，不会把已取消的窗口落库。本函数仅写窗口本身；窗口写入与批次游标
+// 推进的原子化由 UpsertWindowAndAdvanceCursor 完成。
 func (s *Store) UpsertWindow(ctx context.Context, w *model.Window) (ingest.IngestReceipt, bool, error) {
-	ctx = context.Background()
+	if err := ctx.Err(); err != nil {
+		return ingest.IngestReceipt{}, false, model.ErrRequestCancelled
+	}
 	// 先查既有记录。
 	existing, err := s.getWindowByKey(ctx, w.BatchID, w.ElementNo, w.SeqNo)
 	if err == nil {
@@ -58,6 +64,139 @@ func (s *Store) UpsertWindow(ctx context.Context, w *model.Window) (ingest.Inges
 		return ingest.IngestReceipt{WindowID: existing.ID, Inserted: false, Duplicated: true, Checksum: existing.Checksum}, false, nil
 	}
 	return ingest.IngestReceipt{WindowID: w.ID, Inserted: true, Duplicated: false, Checksum: w.Checksum}, true, nil
+}
+
+// UpsertWindowAndAdvanceCursor 在单个事务内原子地完成“窗口幂等写入 + 批次游标推进”。
+//
+// 取消语义：事务以传入的 ctx 绑定；若客户端在提交前取消请求，事务回滚，
+// 既不写入窗口也不推进游标，调用方据此返回可识别的取消结果，后续查询看不到该窗口。
+//
+// 游标推进规则：仅在本次真正插入新窗口（非幂等命中）且新序号超过当前游标时推进；
+// 游标推进不改变批次状态（uploading/processing 均可接收），因此绕过状态机校验。
+// 已发布/封存批次不可再推进，返回 ErrFrozenBatch。
+func (s *Store) UpsertWindowAndAdvanceCursor(ctx context.Context, w *model.Window, cursorFloor int64) (ingest.IngestReceipt, bool, *model.Batch, error) {
+	if err := ctx.Err(); err != nil {
+		return ingest.IngestReceipt{}, false, nil, model.ErrRequestCancelled
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 读取批次，校验可接收与冻结态。
+	var bStatus string
+	var bCursor int64
+	var bID, bArrayID string
+	var bRef int
+	var bRate float64
+	var bCreated, bUpdated string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT id, array_id, status, reference_element, window_cursor, sample_rate_hz, created_at, updated_at
+		 FROM batches WHERE id=?`, w.BatchID).
+		Scan(&bID, &bArrayID, &bStatus, &bRef, &bCursor, &bRate, &bCreated, &bUpdated); err != nil {
+		if err == sql.ErrNoRows {
+			return ingest.IngestReceipt{}, false, nil, model.ErrNotFound
+		}
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("query batch: %w", err)
+	}
+	if bStatus == model.BatchStatusPublished || bStatus == model.BatchStatusArchived {
+		return ingest.IngestReceipt{}, false, nil, model.ErrFrozenBatch
+	}
+
+	// 2. 幂等查既有窗口。
+	var existingID, existingChecksum, existingStatus string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, status, checksum FROM windows WHERE batch_id=? AND element_no=? AND seq_no=?`,
+		w.BatchID, w.ElementNo, w.SeqNo).Scan(&existingID, &existingStatus, &existingChecksum)
+	switch {
+	case err == nil:
+		// 幂等命中：内容一致返回既有记录，不推进游标。
+		if existingChecksum != w.Checksum {
+			return ingest.IngestReceipt{}, false, nil, model.ErrDuplicateWindow
+		}
+		if err := tx.Commit(); err != nil {
+			return ingest.IngestReceipt{}, false, nil, fmt.Errorf("commit (dedup): %w", err)
+		}
+		batch := &model.Batch{ID: bID, ArrayID: bArrayID, Status: bStatus, ReferenceElement: bRef,
+			WindowCursor: bCursor, SampleRateHz: bRate}
+		batch.CreatedAt, _ = time.Parse(time.RFC3339Nano, bCreated)
+		batch.UpdatedAt, _ = time.Parse(time.RFC3339Nano, bUpdated)
+		return ingest.IngestReceipt{WindowID: existingID, Inserted: false, Duplicated: true, Checksum: existingChecksum},
+			false, batch, nil
+	case err != sql.ErrNoRows:
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("query existing window: %w", err)
+	}
+
+	// 3. 插入新窗口。
+	iJSON, err := MarshalFloats(w.I)
+	if err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("marshal i: %w", err)
+	}
+	qJSON, err := MarshalFloats(w.Q)
+	if err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("marshal q: %w", err)
+	}
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO windows (id, batch_id, element_no, seq_no, i_json, q_json, sample_rate, status, checksum, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(batch_id, element_no, seq_no) DO NOTHING`,
+		w.ID, w.BatchID, w.ElementNo, w.SeqNo, iJSON, qJSON, w.SampleRate, w.Status, w.Checksum,
+		w.CreatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("insert window: %w", err)
+	}
+	insertedRows, err := result.RowsAffected()
+	if err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("inspect window insert: %w", err)
+	}
+	if insertedRows == 0 {
+		// 并发竞态：另一事务先插入了同一键，按幂等命中处理。
+		var id, checksum string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id, checksum FROM windows WHERE batch_id=? AND element_no=? AND seq_no=?`,
+			w.BatchID, w.ElementNo, w.SeqNo).Scan(&id, &checksum); err != nil {
+			return ingest.IngestReceipt{}, false, nil, fmt.Errorf("race lookup: %w", err)
+		}
+		if checksum != w.Checksum {
+			return ingest.IngestReceipt{}, false, nil, model.ErrDuplicateWindow
+		}
+		if err := tx.Commit(); err != nil {
+			return ingest.IngestReceipt{}, false, nil, fmt.Errorf("commit (race): %w", err)
+		}
+		batch := &model.Batch{ID: bID, ArrayID: bArrayID, Status: bStatus, ReferenceElement: bRef,
+			WindowCursor: bCursor, SampleRateHz: bRate}
+		batch.CreatedAt, _ = time.Parse(time.RFC3339Nano, bCreated)
+		batch.UpdatedAt, _ = time.Parse(time.RFC3339Nano, bUpdated)
+		return ingest.IngestReceipt{WindowID: id, Inserted: false, Duplicated: true, Checksum: checksum},
+			false, batch, nil
+	}
+
+	// 4. 仅当新序号超过当前游标时推进；状态不变，故不触发状态机校验。
+	newCursor := bCursor
+	if w.SeqNo+1 > newCursor {
+		newCursor = w.SeqNo + 1
+	}
+	if newCursor != bCursor {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE batches SET window_cursor=?, updated_at=? WHERE id=?`, newCursor, now, w.BatchID); err != nil {
+			return ingest.IngestReceipt{}, false, nil, fmt.Errorf("advance cursor: %w", err)
+		}
+		bCursor = newCursor
+		bUpdated = now
+	}
+
+	// 5. 提交事务——此为唯一对外可见的生效点；提交前取消则整体回滚。
+	if err := tx.Commit(); err != nil {
+		return ingest.IngestReceipt{}, false, nil, fmt.Errorf("commit window: %w", err)
+	}
+	batch := &model.Batch{ID: bID, ArrayID: bArrayID, Status: bStatus, ReferenceElement: bRef,
+		WindowCursor: bCursor, SampleRateHz: bRate}
+	batch.CreatedAt, _ = time.Parse(time.RFC3339Nano, bCreated)
+	batch.UpdatedAt, _ = time.Parse(time.RFC3339Nano, bUpdated)
+	return ingest.IngestReceipt{WindowID: w.ID, Inserted: true, Duplicated: false, Checksum: w.Checksum},
+		true, batch, nil
 }
 
 // getWindowByKey 按唯一键查窗口。
