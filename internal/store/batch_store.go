@@ -145,11 +145,11 @@ func (s *Store) ListWindowsJSON(ctx context.Context, batchID string) ([][]byte, 
 	return out, rows.Err()
 }
 
-// NextCursor 返回批次当前游标。
+// NextCursor 返回批次的排他游标上界（下一个待处理 seqNo）。
 func (s *Store) NextCursor(ctx context.Context, batchID string) (int64, error) {
 	b, err := s.GetBatch(ctx, batchID)
 	if err != nil {
 		return 0, err
 	}
-	return b.WindowCursor - 1, nil
+	return b.WindowCursor, nil
 }

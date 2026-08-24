@@ -285,8 +285,10 @@ func ValidateInterpretationTransition(from, to string) error {
 }
 
 // AdvanceWindowCursor returns the persisted exclusive upper bound for windows.
+// The bound is seqNo+1, i.e. the next sequence number to process, and advances
+// monotonically so out-of-order or late uploads never regress the cursor.
 func AdvanceWindowCursor(current, seqNo int64) int64 {
-	next := seqNo
+	next := seqNo + 1 // exclusive upper bound: next sequence to process
 	if current > next {
 		next = current
 	}

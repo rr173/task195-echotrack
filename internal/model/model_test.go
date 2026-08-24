@@ -137,3 +137,22 @@ func TestComputeWindowStats(t *testing.T) {
 		t.Errorf("unexpected stats: %+v", st)
 	}
 }
+
+func TestAdvanceWindowCursorExclusiveUpperBound(t *testing.T) {
+	// 上传序号 3 的第一个窗口：游标应表示下一个待处理序号 4。
+	if got := AdvanceWindowCursor(0, 3); got != 4 {
+		t.Errorf("first window seqNo=3: cursor=%d want 4 (next to process)", got)
+	}
+	// 当前游标已在前方时不回退。
+	if got := AdvanceWindowCursor(7, 3); got != 7 {
+		t.Errorf("late seqNo=3 vs cursor=7: cursor=%d want 7 (monotonic)", got)
+	}
+	// 高序号窗口推进到 seqNo+1。
+	if got := AdvanceWindowCursor(7, 9); got != 10 {
+		t.Errorf("seqNo=9 vs cursor=7: cursor=%d want 10", got)
+	}
+	// 重复上传同一序号不回退。
+	if got := AdvanceWindowCursor(4, 3); got != 4 {
+		t.Errorf("duplicate seqNo=3 vs cursor=4: cursor=%d want 4", got)
+	}
+}
